@@ -24,7 +24,7 @@ class DownType(Enum):
 
 class Downloader(Thread):
 
-    def __init__(self, disk: Cloud189):
+    def __init__(self, disk: Cloud189, call_back=None, failed_callback=None):
         super(Downloader, self).__init__()
         self._task_type = TaskType.DOWNLOAD
         self._save_path = config.save_path
@@ -38,6 +38,8 @@ class Downloader(Thread):
         self._total_size = 1
         self._msg = ''  # 备用
         self._err_msg = []
+        self._user_callback = call_back
+        self._user_failed_callback = failed_callback
 
     def _error_msg(self, msg):
         """显示错误信息, 后台模式时保存信息而不显示"""
@@ -92,41 +94,47 @@ class Downloader(Thread):
         self._f_name = f_name  # 文件(夹)名在网盘的名字
         self._down_type = DownType.FILE_ID if is_file else DownType.FOLDER_ID
 
-    def _show_progress(self, file_name, total_size, now_size, msg=''):
+    def _callback(self, file_name, total_size, now_size, msg=''):
         """更新下载进度的回调函数"""
         self._total_size = total_size
         self._now_size = now_size
         self._msg = msg
+        if self._user_callback is not None:
+            return self._user_callback(file_name, total_size, now_size, msg='')
+        return True
 
-    def _show_down_failed(self, code, file):
+    def _failed_callback(self, code, file):
         """文件下载失败时的回调函数"""
         if hasattr(file, 'url'):
             self._error_msg(f"文件下载失败: {why_error(code)} -> 文件名: {file.name}, URL: {file.url}")
         else:
             self._error_msg(f"文件下载失败: {why_error(code)} -> 文件名: {file.name}, ID: {file.id}")
+        if self._user_failed_callback is not None:
+            return self._user_failed_callback(code, file)
+        return True
 
     def run(self) -> None:
         if self._down_type == DownType.INVALID_URL:
             self._error_msg('(。>︿<) 该分享链接无效')
 
         elif self._down_type == DownType.FILE_URL:
-            code = self._disk.down_file_by_url(self._down_args, '', self._save_path, self._show_progress)
+            code = self._disk.down_file_by_url(self._down_args, '', self._save_path, self._callback)
             if code == Cloud189.LACK_PASSWORD:
                 pwd = input('输入该文件的提取码 : ') or ''
-                code2 = self._disk.down_file_by_url(self._down_args, str(pwd), self._save_path, self._show_progress)
+                code2 = self._disk.down_file_by_url(self._down_args, str(pwd), self._save_path, self._callback)
                 if code2 != Cloud189.SUCCESS:
                     self._error_msg(f"文件下载失败: {why_error(code2)} -> {self._down_args}")
             elif code != Cloud189.SUCCESS:
                 self._error_msg(f"文件下载失败: {why_error(code)} -> {self._down_args}")
 
         elif self._down_type == DownType.FOLDER_URL:
-            code = self._disk.down_dir_by_url(self._down_args, '', self._save_path, callback=self._show_progress,
-                                              mkdir=True, failed_callback=self._show_down_failed)
+            code = self._disk.down_dir_by_url(self._down_args, '', self._save_path, callback=self._callback,
+                                              mkdir=True, failed_callback=self._failed_callback)
             if code == Cloud189.LACK_PASSWORD:
                 pwd = input('输入该文件夹的提取码 : ') or ''
                 code2 = self._disk.down_dir_by_url(self._down_args, str(pwd), self._save_path,
-                                                   callback=self._show_progress,
-                                                   mkdir=True, failed_callback=self._show_down_failed)
+                                                   callback=self._callback,
+                                                   mkdir=True, failed_callback=self._failed_callback)
                 if code2 != Cloud189.SUCCESS:
                     self._error_msg(f"文件夹下载失败: {why_error(code2)} -> {self._down_args}")
             elif code != Cloud189.SUCCESS:
@@ -134,13 +142,13 @@ class Downloader(Thread):
 
         elif self._down_type == DownType.FILE_ID:
             save_path = self._save_path + os_sep + self._f_path
-            code = self._disk.down_file_by_id(self._down_args, save_path, self._show_progress)
+            code = self._disk.down_file_by_id(self._down_args, save_path, self._callback)
             if code != Cloud189.SUCCESS:
                 self._error_msg(f"文件下载失败: {why_error(code)} -> {self._f_path}")
 
         elif self._down_type == DownType.FOLDER_ID:
             save_path = self._save_path + os_sep + self._f_path + os_sep + self._f_name
-            code = self._disk.down_dirzip_by_id(self._down_args, save_path, callback=self._show_progress)
+            code = self._disk.down_dirzip_by_id(self._down_args, save_path, callback=self._callback)
             if code != Cloud189.SUCCESS:
                 self._error_msg(f"文件夹下载失败: {why_error(code)} -> {self._f_path} ")
 
@@ -153,7 +161,7 @@ class UploadType(Enum):
 
 class Uploader(Thread):
 
-    def __init__(self, disk: Cloud189):
+    def __init__(self, disk: Cloud189, call_back=None, failed_callback=None):
         super(Uploader, self).__init__()
         self._task_type = TaskType.UPLOAD
         self._disk = disk
@@ -170,6 +178,8 @@ class Uploader(Thread):
         self._done_files = 0  # for dir upload
         self._total_files = 0  # for dir upload
         self._err_msg = []
+        self._user_callback = call_back
+        self._user_failed_callback = failed_callback
 
     def _error_msg(self, msg):
         self._err_msg.append(msg)
@@ -208,14 +218,19 @@ class Uploader(Thread):
         self._folder_id = folder_id
         self._folder_name = folder_name
 
-    def _show_progress(self, file_name, total_size, now_size, msg=''):
+    def _callback(self, file_name, total_size, now_size, msg=''):
         self._total_size = total_size
         self._now_size = now_size
         self._msg = msg
+        if self._user_callback is not None:
+            return self._user_callback(file_name, total_size, now_size, msg)
+        return True
 
-    def _show_upload_failed(self, code, filename):
+    def _failed_callback(self, code, filename):
         """文件上传失败时的回调函数"""
         self._error_msg(f"上传失败: {why_error(code)} -> {filename}")
+        if self._user_failed_callback is not None:
+            return self._user_failed_callback(code, filename)
 
     def _set_dir_count(self, done_files, total_files):
         """文件夹中文件数量"""
@@ -224,13 +239,13 @@ class Uploader(Thread):
 
     def run(self) -> None:
         if self._up_type == UploadType.FILE:
-            info = self._disk.upload_file(self._up_path, self._folder_id, callback=self._show_progress, force=self._force)
+            info = self._disk.upload_file(self._up_path, self._folder_id, callback=self._callback, force=self._force)
             if info.code != Cloud189.SUCCESS:
                 self._error_msg(f"上传失败: {why_error(info.code)} -> {self._up_path}")
 
         elif self._up_type == UploadType.FOLDER:
             infos = self._disk.upload_dir(self._up_path, self._folder_id, self._force, self._mkdir,
-                                          callback=self._show_progress, failed_callback=self._show_upload_failed,
+                                          callback=self._callback, failed_callback=self._failed_callback,
                                           up_handler=self._set_dir_count)
             if not isinstance(infos, list):  # 进入单文件上传之前就已经出错(创建文件夹失败！) UpCode or MkCode
                 self._error_msg(f"文件夹上传失败: {why_error(infos.code)} -> {self._up_path}")

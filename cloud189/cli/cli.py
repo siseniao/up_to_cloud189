@@ -4,6 +4,7 @@ from getpass import getpass
 from random import choice
 from sys import exit as exit_cmd
 from webbrowser import open_new_tab
+from platform import platform
 
 from cloud189.api import Cloud189
 from cloud189.api.models import FileList, PathList
@@ -36,6 +37,8 @@ class Commander:
         self._reader_mode = config.reader_mode
         self._default_dir_pwd = ''
         self._disk.set_captcha_handler(captcha_handler)
+        self._upload_callback = None
+        self._upload_failed_callback = None
 
     @staticmethod
     def clear():
@@ -48,6 +51,10 @@ class Commander:
     @staticmethod
     def update():
         check_update()
+
+    def set_upload_callback(self, callback=None, failed_callback=None):
+        self._upload_callback = callback
+        self._upload_failed_callback = failed_callback
 
     def bye(self):
         if self._task_mgr.has_alive_task():
@@ -94,19 +101,29 @@ class Commander:
         self._last_work_id = self._work_id
         self._work_name = self._path_list[-1].name
         self._work_id = self._path_list[-1].id
+        config.work_id = self._work_id
         if dir_id != -11:  # 如果存在上级路径
             self._parent_name = self._path_list[-2].name
             self._parent_id = self._path_list[-2].id
 
     def login(self, args):
         """登录网盘"""
-        if args:
-            if '--auto' in args:
-                if config.cookie and self._disk.login_by_cookie(config) == Cloud189.SUCCESS:
-                    self.refresh(config.work_id, auto=True)
-                    return None
-        username = input('输入用户名:')
-        password = getpass('输入密码:')
+        # if args:
+        #     if '--auto' in args:
+        #         if config.cookie and self._disk.login_by_cookie(config) == Cloud189.SUCCESS:
+        #             self.refresh(config.work_id, auto=True)
+        #             return None
+        if '--auto' in args:
+            args.remove('--auto')
+            if config.cookie and self._disk.login_by_cookie(config) == Cloud189.SUCCESS:
+                self.refresh(config.work_id, auto=True)
+                return None
+        if len(args) >= 2:
+            username = args[0]
+            password = args[1]
+        else:
+            username = input('输入用户名:')
+            password = getpass('输入密码:')
         if not username or not password:
             error('没有用户名或密码 :(')
             return None
@@ -116,7 +133,7 @@ class Commander:
             return None
         elif code == Cloud189.FAILED:
             error('登录失败,用户名或密码错误 :(')
-            os._exit(0)
+            exit(1)
         # 登录成功保存用户 cookie
         config.username = username
         config.password = password
@@ -186,11 +203,12 @@ class Commander:
     def su(self, args):
         """列出、切换用户"""
         users = config.get_users_name()
+
         def list_user():
             for i, user in enumerate(users):
                 user_info = config.get_user_info(user)
-                methord = "用户名+密码 登录" if user_info[2] else "Cookie 登录"
-                print(f"[{i}] 用户名: {user}, {methord}")
+                method = "用户名+密码 登录" if user_info[2] else "Cookie 登录"
+                print(f"[{i}] 用户名: {user}, {method}")
         if args:
             if args[0] == '-l':
                 list_user()
@@ -273,9 +291,8 @@ class Commander:
         if fid != old_fid:
             self._file_list, _ = self._disk.get_file_list(old_fid)
 
-    def cd(self, args):
+    def _cd(self, dir_name):
         """切换工作目录"""
-        dir_name = args[0]
         if not dir_name:
             info('cd .. 返回上级路径, cd - 返回上次路径, cd / 返回根目录')
         elif dir_name in ["..", "../"]:
@@ -290,6 +307,20 @@ class Commander:
             self.refresh(folder.id)
         else:
             error(f'文件夹不存在: {dir_name}')
+            return False
+        return True
+
+    def cd(self, args):
+        """切换工作目录"""
+        dir_path = args[0].strip()
+        dir_list = dir_path.split('/')
+        if dir_path.startswith('/'):
+            self._cd('/')
+        for name in dir_list:
+            if name is not None and name != '':
+                if not self._cd(name):
+                    return False
+        return True
 
     def mkdir(self, args):
         """创建文件夹"""
@@ -414,7 +445,7 @@ class Commander:
                     i += 1  # 额外加一
                 self._disk.get_file_info_by_url(item, pwd)
             elif file := self._file_list.find_by_name(item):
-                downloader = Downloader(self._disk)
+                downloader = Downloader(self._disk, self._upload_callback, self._upload_failed_callback)
                 f_path = '/'.join(self._path_list.all_name)  # 文件在网盘的父路径
                 if file.isFolder:  # 使用 web 接口打包下载文件夹
                     downloader.set_fid(file.id, is_file=False, f_path=f_path, f_name=item)
@@ -456,16 +487,19 @@ class Commander:
         follow = False
         force = False
         mkdir = True
-        for arg in args:
-            follow, force, mkdir, match = parsing_up_params(arg, follow, force, mkdir)
+        i = 0
+        while i < len(args):
+            follow, force, mkdir, match = parsing_up_params(args[i], follow, force, mkdir)
             if match:
-                args.remove(arg)
+                args.pop(i)
+                i -= 1
+            i += 1
         for path in args:
             path = path.strip('\"\' ')  # 去除直接拖文件到窗口产生的引号
             if not os.path.exists(path):
                 error(f'该路径不存在哦: {path}')
                 continue
-            uploader = Uploader(self._disk)
+            uploader = Uploader(self._disk, self._upload_callback, self._upload_failed_callback)
             if os.path.isfile(path):
                 uploader.set_upload_path(path, is_file=True, force=force)
             else:
@@ -602,8 +636,8 @@ class Commander:
     def run_one(self, cmd, args):
         """运行单任务入口"""
         no_arg_cmd = ['help', 'update', 'who', 'quota']
-        cmd_with_arg = ['ls', 'll', 'down', 'mkdir', 'su', 'sign', 'logout',
-                        'mv', 'rename', 'rm', 'share', 'upload']
+        cmd_with_arg = ['ls', 'll', 'down', 'mkdir', 'su', 'sign', 'logout', 'login',
+                        'mv', 'rename', 'rm', 'share', 'upload', 'cd']
 
         if cmd in ("upload", "down"):
             if "-f" not in args:

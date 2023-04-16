@@ -741,6 +741,10 @@ class Cloud189(object):
             logger.error(f"Upload file: [{file_path}] is not a file!")
             return UpCode(code=Cloud189.PATH_ERROR, path=file_path)
 
+        if callback:
+            if not callback(file_path, 1, 1, 'file_path'):
+                return UpCode(code=Cloud189.SUCCESS, path=file_path)
+
         file_name = os.path.basename(file_path)
         file_size = os.path.getsize(file_path)  # Byte
         up_info = self._check_up_file_exist(UpInfo(name=file_name, path=file_path, size=file_size,
@@ -816,8 +820,10 @@ class Cloud189(object):
             logger.debug(f"Upload dir: file [{upload_file[0]}] enter upload process...")
             up_code = self.upload_file(upload_file[0], upload_file[1], force=force, callback=callback)
             if failed_callback and up_code.code != Cloud189.SUCCESS:
-                failed_callback(up_code.code, up_code.path)
+                callback_ret = failed_callback(up_code.code, up_code.path)
                 logger.debug(f"Up Dir Code: {up_code.code=}, {up_code.path=}")
+                if not callback_ret:
+                    return up_codes
             up_codes.append(up_code)
             logger.debug(f"Dir: {index=}, {total_files=}")
         return up_codes
